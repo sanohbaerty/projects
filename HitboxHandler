@@ -1,0 +1,189 @@
+--[[ To use this:
+
+AttackHandler calls:
+    hitbox = HitboxHandler.new(player, moveData.HitboxLocation[comboIndex], function(victim)
+        Remotes.HitConfirm:FireServer(victim)
+    end)
+    hitbox:Start()
+
+    -- after hitbox window duration:
+    hitbox:Destroy()
+    
+    > so add like a task.delay or something
+    > also you can use :Stop(), I just felt like making it if it ever became useful. It's for if you want to reuse the hitbox
+]]
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Modules = ReplicatedStorage.Modules
+local Shared = Modules.Shared
+local GameConfig = require(Shared.GameConfig)
+local Signals = require(Shared.Signals)
+local Janitor = require(Shared.Janitor)
+local ComboTracker = require(Shared.ComboTracker)
+
+local HitboxHandler = {}
+HitboxHandler.__index = HitboxHandler
+
+local function buildRaycastParams(character)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = {character}
+	return params
+end
+
+local function recordPositions(comboPart)
+	local positions = {}
+	for _, attachment in comboPart.Hitbox:GetChildren() do
+		if not attachment:IsA("Attachment") then continue end
+		
+		positions[attachment] = attachment.WorldPosition
+	end
+	return positions
+end
+
+function HitboxHandler.new(character: Model, comboPart: Part, onHit: () -> (), ...)
+	assert(comboPart, "HitboxHandler.new: comboPart is nil")
+	assert(typeof(onHit) == "function", "HitboxHandler.new: onHit must be a function")
+	
+	local self = setmetatable({}, HitboxHandler)
+	self.Character = character
+	self.ComboParent = comboPart.Parent -- Animations or the MoveName
+	self.ComboPart = comboPart:Clone()
+	self.OnHit = onHit
+	self.Janitor = Janitor.new()
+	
+	self.HitRegistry = {} -- [character] = true
+	self.LastPositions = {} -- [attachment] = Vector3 from previous frame
+	self.Finished = Signals.new()
+	self.Active = false
+	self.Args = {...}
+	
+	self.RaycastParams = buildRaycastParams(self.Character)
+	
+	self.Janitor:Add(self.Finished, "DisconnectAll")
+	
+	return self
+end
+
+function HitboxHandler:Start()
+	if self.Active then return end
+	self.Active = true
+
+	local moveData = GameConfig.HitboxLocations[self.ComboPart.Name] or GameConfig.HitboxLocations[self.ComboParent.Name]
+	if not moveData then return end
+
+	moveData = moveData["Part"] and moveData or moveData[ComboTracker.getStep(self.Character, self.ComboParent.Name)]
+	if not moveData["Part"] then return end
+
+	local bodyPart = self.Character:FindFirstChild(moveData.Part)
+	if not bodyPart then return end
+
+	self.ComboPart.Parent = workspace.Hitboxes
+
+	self.ComboPart.CFrame = bodyPart.CFrame * moveData.Offset
+	self.LastPositions = recordPositions(self.ComboPart)
+
+	self.Janitor:Add(RunService.Heartbeat:Connect(function()
+		local part = self.Character:FindFirstChild(moveData.Part)
+		if not part then return end
+
+		self.ComboPart.CFrame = part.CFrame * moveData.Offset
+		self:Cast()
+	end), "Disconnect")
+end
+
+function HitboxHandler:Stop()
+	if not self.Active then return end
+	
+	self.ComboPart.Parent = ReplicatedStorage.Junk
+	
+	self.Active = false
+	self.Finished:Fire()	
+	
+	self.Janitor:Cleanup()
+	self.HitRegistry = {}
+	self.LastPositions = {}
+end
+
+function HitboxHandler:Destroy()
+	self:Stop()
+	self.Finished:Fire()
+	self.Janitor:Destroy()
+	self.HitRegistry = {}
+	self.LastPositions = {}
+	self.ComboPart:Destroy()
+	self.OnHit = nil
+end
+
+function HitboxHandler:Cast()
+	local CurrentPositions = recordPositions(self.ComboPart)
+	
+	for attachment, currentPosition in CurrentPositions do
+		local lastPosition = self.LastPositions[attachment]
+		if not lastPosition then continue end
+		
+		local direction = (currentPosition - lastPosition).Unit
+		local distance = (currentPosition - lastPosition).Magnitude
+		
+		if distance < 0.001 then continue end -- we not raycasting this
+		
+		local result = workspace:Raycast(lastPosition, direction * distance, self.RaycastParams)
+		if not result then continue end
+		
+		local victim = self:FindTargetCharacter(result)
+		if not victim then continue end
+		
+		if not self:CanHit(victim) then continue end
+		
+		self.HitRegistry[victim] = true
+		
+		local Args = {}
+		for i, v in self.Args do
+			if typeof(v) ~= "string" then
+				Args[i] = v
+			else
+				-- TO ADD CUSTOM KEYS
+				
+				if v == "Victim" then
+					Args[i] = victim
+			--  elseif Args = "YOUR KEY" then 
+			--  	Args[i] = YOUR VALUE
+				else
+					Args[i] = v
+				end
+				
+				-- Must have a custom value here that is determined by :Cast
+			end
+		end
+		self.OnHit(table.unpack(Args))
+	end
+	
+	self.LastPositions = CurrentPositions
+end
+
+function HitboxHandler:FindTargetCharacter(result: RaycastResult)
+	if not result then return end
+	local instance = result.Instance
+	
+	local character = instance:FindFirstAncestorOfClass("Model")
+	if not character then return end
+	
+	local Humanoid = character:FindFirstChildWhichIsA("Humanoid")
+	if not Humanoid then return end
+	
+	return character
+end
+
+function HitboxHandler:CanHit(victim: Model)
+	if not victim then return false end
+	if victim == self.Character then return false end
+	
+	local humanoid = victim:FindFirstChildWhichIsA("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return false end
+	
+	if self.HitRegistry[victim] then return false end
+	
+	return true
+end
+
+return HitboxHandler
