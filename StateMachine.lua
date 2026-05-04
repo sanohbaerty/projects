@@ -26,8 +26,8 @@ local Transitions = {
 	[S.CASTING] = {S.IDLE, S.DODGING, S.BLOCKING, S.STUNNED, S.DEAD},
 	[S.DODGING] = {S.IDLE, S.DEAD},
 	[S.BLOCKING] = {S.IDLE, S.ATTACKING, S.CASTING, S.DODGING, S.GUARDBROKEN, S.DEAD},
-	[S.GUARDBROKEN] = {S.IDLE, S.DEAD},
-	[S.STUNNED] = {S.IDLE, S.DEAD},
+	[S.GUARDBROKEN] = {S.IDLE, S.DEAD, S.GUARDBROKEN},
+	[S.STUNNED] = {S.IDLE, S.DEAD, S.STUNNED},
 	[S.DEAD] = {}
 }
 
@@ -57,7 +57,7 @@ function StateMachine:CanTransition(toState)
 	local allowed = Transitions[self.CurrentState]
 	if not allowed then return false end
 	
-	return table.find(allowed, toState)
+	return table.find(allowed, toState) ~= nil
 end
 
 function StateMachine:Transition(toState: string, args: {onEnter: {}, onExit: {}})
