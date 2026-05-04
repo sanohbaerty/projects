@@ -1,0 +1,368 @@
+-- Important: Most UI related settings are in ReplicatedStorage.Client.UIHandler (look inside children as well)
+-- Some settings lik colors and stuff are found here
+
+--------------------------------------------------------------------------------
+-- TYPES
+--------------------------------------------------------------------------------
+
+export type Move = {
+	["Damage"]: {number},
+	["GlobalCooldown"]: {number},
+	["Cooldown"]: {number},
+	["MoveDuration"]: {number},
+	["StaminaCost"]: {number},
+	["StunTime"]: {number},
+	["ComboResetTime"]: number,
+	["Type"]: "Melee" | "Ranged" | "Special",
+	["Animation"]: string,
+	["Hitbox"]: Folder | Part
+}
+
+export type StatusEffect = {
+	["Duration"]: number,
+	["Stackable"]: boolean,
+	["Type"]: "HardCC" | "SoftCC" | "Buff" | "DamageOverTime" | "Defensive" | "Immunity",
+	["Value"]: number?,
+	["TickRate"]: number?,
+	["DamagePerTick"]: number?,
+	["MaxStacks"]: number?
+}
+
+--------------------------------------------------------------------------------
+-- SERVICES
+--------------------------------------------------------------------------------
+
+local config = {}
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Hitboxes = ReplicatedStorage.Hitboxes
+local Animations = ReplicatedStorage.Animations
+
+--------------------------------------------------------------------------------
+-- CONFIG / VARIABLES
+--------------------------------------------------------------------------------
+
+config.GuardBrokenDuration = 2
+config.MaxStamina = 100
+config.StaminaRegenDelay = 3 -- how long to wait before stamina regens (must be out of combat)
+config.DefaultStaminaRegenRate = 10
+config.MaxHitRange = 6 -- studs
+
+--------------------------------------------------------------------------------
+-- CONFIG / UI SETTINGS
+--------------------------------------------------------------------------------
+
+config.ShieldBarLow = 0.3 -- whenever the shield bar gets to this value (0.3 = 30% of max value) or lower then it will turn Shield.LowHP[false] color
+config.HealthLow = 0.3 -- whenever the health bar gets to this value (0.3 = 30% of max value) or lower then it will turn UI_Colors.Health.LowHP[true] 
+config.UI_Colors = {
+	["EffectColors"] = {
+		["DEFAULT_COLOR"] = Color3.fromRGB(170, 160, 150),
+		["Stun"] = Color3.fromRGB(255, 200, 90),
+		["Slow"] = Color3.fromRGB(120, 150, 255),
+		["SpeedBoost"] = Color3.fromRGB(80, 255, 200),
+		["Burn"] = Color3.fromRGB(255, 100, 30),
+		["Poison"] = Color3.fromRGB(160, 255, 110),
+		["Shield"] = Color3.fromRGB(140, 210, 255),
+		["Invulnerable"] = Color3.fromRGB(255, 255, 255),
+	},
+
+	["StatusEffects"] = {
+		["EffectName"] = {
+			["TextColor"] = Color3.fromRGB(255, 240, 220),
+			["TextFont"] = Enum.Font.GothamBold,
+		},
+		["StackCount"] = {
+			["TextColor"] = Color3.fromRGB(255, 255, 255),
+			["TextFont"] = Enum.Font.GothamBold,
+		}
+	},
+
+	["Stamina"] = {
+		["Regening"] = {
+			[true] = Color3.fromRGB(255, 170, 70),
+			[false] = Color3.fromRGB(120, 70, 30)
+		},
+		["Background"] = Color3.fromRGB(35, 20, 10),
+	},
+
+	["Shield"] = {
+		["LowHP"] = { -- color when its about to break is true, normal is false
+			[true] = Color3.fromRGB(255, 110, 80),
+			[false] = Color3.fromRGB(140, 210, 255)
+		},
+		["Background"] = Color3.fromRGB(15, 20, 30)
+	},
+
+	["Health"] = {
+		["LowHP"] = {
+			[true] = Color3.fromRGB(255, 80, 60),
+			[false] = Color3.fromRGB(120, 255, 150)
+		},
+		["Background"] = Color3.fromRGB(25, 15, 10),
+		["GhostBar"] = Color3.fromRGB(220, 100, 80),
+		["HealthText"] = Color3.fromRGB(255, 245, 230),
+		["HealthFont"] = Enum.Font.GothamBold
+	},
+
+	["ComboCounter"] = {
+		["ComboNumber"] = {
+			["TextColor"] = Color3.fromRGB(255, 190, 80),
+			["TextFont"] = Enum.Font.GothamBlack,
+		},
+
+		["MoveName"] = {
+			["TextColor"] = Color3.fromRGB(220, 200, 180),
+			["TextFont"] = Enum.Font.Gotham,
+		}
+	}
+}
+--------------------------------------------------------------------------------
+-- CONFIG / DEFAULT SETTINGS
+--------------------------------------------------------------------------------
+
+config.DefaultHealth = 100
+config.DefaultMaxHealth = 100
+
+--------------------------------------------------------------------------------
+-- CONFIG / BLOCK RULES
+--------------------------------------------------------------------------------
+
+config.BlockEnableType = "Hold" -- "Hold" or "Toggle", self explanatory
+config.BlockSpeedModifier = 0.5 -- when blocking what walkspeed is multiplied by
+
+config.BlockType = "Shield" -- "Partial" or "Shield", shield negates all damage but has a block bar
+-- while partial takes partial health
+
+config.PartialBlockPercent = 15 -- 15% of damage is taken forever (only for partial blocktype)
+config.ShieldBar = 100 -- 100 damage taken before block shield breaks (only for the shield blocktype)
+
+--------------------------------------------------------------------------------
+-- STATUS EFFECTS
+-- HardCC: disables all actions (stun)
+-- SoftCC: reduces movement speed (slow)
+-- Buff: positive stat modifier (speed boost, jump boost, etc)
+-- DamageOverTime: periodic damage (burn, poison)
+-- Defensive: absorbs incoming damage (shield)
+-- Immunity: prevents all damage (invulnerable)
+
+-- IMPORTANT: When adding a status effect, go into StatusEffectHandler and modify the effect function
+-- HardCC and SoftCC is there just for you to know what type of damage it is.
+-- I do not have ANY code written for hardcc the ["Type"], only the effect functions inside StatusEffectHandler
+--------------------------------------------------------------------------------
+
+config.StatusEffects = {
+	["Stun"] = {
+		["Duration"] = 1.5,
+		["Stackable"] = false,
+		["Type"] = "HardCC"
+	},
+	["Slow"] = {
+		["Duration"] = 2,
+		["Value"] = 0.3, -- 30% speed reduction
+		["Stackable"] = false,
+		["Type"] = "SoftCC"
+	},
+	["SpeedBoost"] = {
+		["Duration"] = 2,
+		["Value"] = 0.25, -- 25% speed increase
+		["Stackable"] = false,
+		["Type"] = "Buff"
+	},
+	["Burn"] = {
+		["Duration"] = 4,
+		["TickRate"] = 0.5,
+		["DamagePerTick"] = 2,
+		["Stackable"] = true,
+		["MaxStacks"] = 5,
+		["Type"] = "DamageOverTime"
+	},
+	["Poison"] = {
+		["Duration"] = 5,
+		["TickRate"] = 1,
+		["DamagePerTick"] = 3,
+		["Stackable"] = false,
+		["Type"] = "DamageOverTime"
+	},
+	["Shield"] = {
+		["Duration"] = 3,
+		["Value"] = 20, -- absorbs 20 damage before breaking
+		["Stackable"] = false,
+		["Type"] = "Defensive"
+	},
+	["Invulnerable"] = {
+		["Duration"] = 1,
+		["Stackable"] = false,
+		["Type"] = "Immunity"
+	}
+}
+
+--------------------------------------------------------------------------------
+-- MOVES
+-- Damage, Cooldown, StaminaCost: one value per combo hit
+-- Animation: must exist in ReplicatedStorage.Animations
+-- Hitbox: must exist in ReplicatedStorage.Hitboxes
+--------------------------------------------------------------------------------
+
+config.Moves = {
+	["Dash"] = {
+		["Keybinds"] = {Enum.KeyCode.Q, Enum.KeyCode.ButtonB},
+		["Cooldown"] = {
+			["Front"] = 6,
+			["Left"] = 4,
+			["Right"] = 4,
+			["Back"] = 6,
+			["BackAerial"] = 5.5
+		},
+		["StaminaCost"] = {
+			["Front"] = 15,
+			["Left"] = 10,
+			["Right"] = 10,
+			["Back"] = 15,
+			["BackAerial"] = 15
+		},
+		["Forces"] = { -- for dashing; the strength
+			["Front"] = 100, 
+			["Back"] = 80, 
+			["BackAerial"] = 80,
+			["Left"] = 50, 
+			["Right"] = 50,
+		},
+		["MoveType"] = "Special",
+		["Animation"] = Animations.Dash
+	},
+	["Block"] = {
+		["Keybinds"] = {Enum.KeyCode.F, Enum.KeyCode.ButtonY},
+		["MoveType"] = "Special",
+		["Animation"] = Animations.Block
+	},
+	["BlockBroken"] = {
+		["MoveType"] = "Special",
+		["Animation"] = Animations.BlockBroken
+	},
+	["Punch"] = {
+		["Damage"] = {5, 5, 5, 5, 5},
+		["Cooldown"] = {0.6, 0.6, 0.6, 0.6, 1.2},
+		["GlobalCooldown"] = {0.6, 0.6, 0.6, 0.6, 0.6},
+		["MoveDuration"] = {0.6, 0.6, 0.6, 0.6, 0.6},
+		["StaminaCost"] = {4, 4, 4, 4, 4},
+		["StunTime"] = {1, 1, 1, 1, 0.8},
+		["ComboResetTime"] = 1.2,
+		["Type"] = "Melee",
+		["Animation"] = Animations.Punch,
+		["Hitbox"] = Hitboxes.Punch,
+		["Keybinds"] = {Enum.UserInputType.MouseButton1, Enum.KeyCode.ButtonR2} -- PC/console
+	},
+	["Heavy Punch"] = {
+		["Damage"] = {15},
+		["Cooldown"] = {4},
+		["GlobalCooldown"] = {0.6},
+		["MoveDuration"] = {0.6},
+		["StaminaCost"] = {15},
+		["StunTime"] = {2},
+		["ComboResetTime"] = 1.2,
+		["Type"] = "Melee",
+		["Animation"] = Animations["Heavy Punch"],
+		["Hitbox"] = Hitboxes["Heavy Punch"],
+		["Keybinds"] = {Enum.KeyCode.E, Enum.KeyCode.ButtonX} -- PC/console
+	}
+}
+
+-- To make hitboxes visible (for testing purposes) just set the transparency of the parts in ReplicatedStorage.Hitboxes to 0
+config.HitboxLocations = {
+	["Punch"] = {
+		[1] = {
+			["Part"] = "Left Arm",
+			["Offset"] = CFrame.new(0, -1.3, 0),
+		},
+		[2] = {
+			["Part"] = "Right Arm",
+			["Offset"] = CFrame.new(0, -1.3, 0),
+		},
+		[3] = {
+			["Part"] = "Left Arm",
+			["Offset"] = CFrame.new(0, -1.3, 0),
+		},
+		[4] = {
+			["Part"] = "Left Arm",
+			["Offset"] = CFrame.new(0, -1.3, 0),
+		},
+		[5] = {
+			["Part"] = "Left Leg",
+			["Offset"] = CFrame.new(0, -1.3, 0),
+		}
+	},
+	["Heavy Punch"] = {
+		[1] = {
+			["Part"] = "Left Arm",
+			["Offset"] = CFrame.new(0, -2.3, 0),
+		}
+	}
+}
+
+--------------------------------------------------------------------------------
+-- WHEN ADDING A MOVE
+
+-- Damage, Cooldown, StaminaCost must all have the same number of entries.
+
+-- Hitbox and Animation must be folders that have 1 child per move in the combo
+-- (the children must be named 1, 2, 3, etc. they correspond to the combo number)
+
+
+-- !!!!!!!!!!!!!!!!!
+-- !!  IMPORTANT  !! --> IF YOU HAVE A 1 COMBO MOVE: Do not add a folder for animation or hitbox. Just name it the move name and not "1"
+-- !!!!!!!!!!!!!!!!! --> But still have tables for every other stat (damage, cooldown, staminacost etc) so it should be a table with just one thing inside of it
+
+
+-- !! TO ADD A CUSTOM HIT REACTION ANIMATION FOR WHEN A VICTIM GETS HIT !!
+
+-- Right now, the script will look for a folder in ReplicatedStorage.Hitboxes.DefaultHitAnimations with 6 animations named 1, 2, 3, 4, 5 (will go back to 1 after 5)
+-- BUT, you can make it custom. You can make a folder in ReplicatedStorage.Animations titled MoveName Hit and it will use those animations instead
+-- e.g. if you have a move called "Front Kick" and you want custom hit animations, make a folder in ReplicatedStorage.Animations titled "Front KickHit"
+
+
+-- TO MODIFY HITBOXLOCATIONS
+
+-- Go to config.HitboxLocations and do the following:
+-- 1. Add your move name as a key (same exact key as config.Moves)
+-- 2. Then add 1 into the table per combo like [1] = {}, [2] = {}
+-- 3. Add a table with the following keys: Part, Offset
+
+-- This will get the part from config.Moves["YOUR MOVE"].Hitbox for the combo currently being done and just move it to that offset according to
+-- that part (e. g. -1 stud below the right arm) for Punch
+
+--	["Punch"] = {
+--		[1] = {
+--			["Part"] = "Right Arm",
+--			["Offset"] = CFrame.new(0, -1.3, 0), -- 1 stud below the right arm
+--		}
+--	}
+
+
+--------------------------------------------------------------------------------
+
+-- Change this below when changing dash animations
+-- TotalDuration should be the length of the animation, IFrameDuration is custom to whatever you want it to be
+-- I added like 5/60 to each TotalDuration so that you can't hit while dashing (to be safe) I recommend you do the same
+config.DodgeIFrames = {
+	Front = {
+		IFrameDuration = 25/60,
+		TotalDuration = 30/60 -- was 25
+	},
+	Back = {
+		IFrameDuration = 39/60,
+		TotalDuration = 51/60 -- was 46
+	},
+	BackAerial = {
+		IFrameDuration = 32/60,
+		TotalDuration = 44/60 -- was 39
+	},
+	Left = {
+		IFrameDuration = 37/60,
+		TotalDuration = 50/60 -- was 45
+	},
+	Right = {
+		IFrameDuration = 37/60,
+		TotalDuration = 50/60 -- was 45
+	},
+}
+
+return config
