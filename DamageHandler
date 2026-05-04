@@ -1,0 +1,89 @@
+local DamageHandler = {}
+local ReplicatedStorage = game.ReplicatedStorage
+local Modules = ReplicatedStorage.Modules
+local Shared = Modules.Shared
+local GameConfig = require(Shared.GameConfig)
+local StateRegistry = require(Shared.StateRegistry)
+local AnimationController = require(Shared.AnimationController)
+
+local Server = Modules.Server
+local StatusEffectHandler = require(Server.StatusEffectHandler)
+
+local Remotes = ReplicatedStorage.Remotes
+
+function DamageHandler:Damage(victim: Model, move: string, combo: number)
+	local Humanoid = victim:FindFirstChildWhichIsA("Humanoid")
+	if not Humanoid then return end
+
+	local VictimState = StateRegistry:Get(victim) :: StateRegistry.State
+	if not VictimState then return end
+	if VictimState:IsState("Dead") then return end
+	if VictimState.Invincible then return end
+
+	local MoveData = GameConfig.Moves[move] :: GameConfig.Move
+	local Damage = MoveData.Damage[combo]
+
+	if VictimState:IsState("Blocking") then
+		if GameConfig.BlockType == "Shield" then
+			local ShieldBar = victim:GetAttribute("ShieldBar") or GameConfig.ShieldBar
+			local NewShieldBar = ShieldBar - Damage
+
+			if NewShieldBar <= 0 then
+				victim:SetAttribute("ShieldBar", GameConfig.ShieldBar)
+				VictimState:Transition("GuardBroken", {
+					onEnter = {
+						GuardBrokenDuration = GameConfig.GuardBrokenDuration
+					}
+				})
+				local VictimPlayer = game.Players:GetPlayerFromCharacter(victim)
+				if VictimPlayer then
+					Remotes.BlockBroken:FireClient(VictimPlayer, GameConfig.GuardBrokenDuration)
+				else
+					AnimationController:StopAll(nil, victim)
+					AnimationController:Play("BlockBroken", nil, nil, victim)
+					task.delay(GameConfig.GuardBrokenDuration, function()
+						AnimationController:Stop("BlockBroken", nil, victim)
+					end)
+				end
+				
+				Humanoid:TakeDamage(Damage)
+				return Damage
+			else
+				victim:SetAttribute("ShieldBar", NewShieldBar)
+				return 0
+			end
+		elseif GameConfig.BlockType == "Partial" then
+			Damage *= (GameConfig.PartialBlockPercent / 100)
+		end
+
+		Humanoid:TakeDamage(Damage)
+		
+		return Damage
+	end
+
+	VictimState:Transition("Stunned", {
+		onEnter = {
+			Overrides = {
+				Duration = MoveData.StunTime[combo] or GameConfig.StatusEffects["Stun"].Duration
+			} :: GameConfig.StatusEffect
+		}
+	})
+	Humanoid:TakeDamage(Damage)
+	
+	-- Normal hit
+	local VictimPlayer = game.Players:GetPlayerFromCharacter(victim)
+	if VictimPlayer then
+		Remotes.HitReaction:FireClient(VictimPlayer, move)
+	else
+		local customName = move .. "Hit"
+		if AnimationController:HasTrack(customName .. "1", victim) then
+			AnimationController:Play(customName, nil, nil, victim)
+		else
+			AnimationController:Play("HitReaction", nil, nil, victim)
+		end
+	end
+
+	return Damage
+end
+
+return DamageHandler
