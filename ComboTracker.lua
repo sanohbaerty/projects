@@ -2,19 +2,34 @@ local ReplicatedStorage = game.ReplicatedStorage
 local Modules = ReplicatedStorage.Modules
 local GameConfig = require(Modules.Shared.GameConfig)
 local PlayerSignals = require(Modules.Shared.PlayerSignals)
+local Signals = require(Modules.Shared.Signals)
 
 local ComboTracker = {}
 
-local DefaultComboTable = {
-	CurrentCombo = 1,
-	Combo = 0,
-	Time = os.clock()
-}
+if game.RunService:IsClient() then
+	ComboTracker.ComboChanged = Signals.new()
+	ComboTracker.ComboEnded = Signals.new()
+end
 
-function ComboTracker:Advance(player: Player, move: string)
-	local data = ComboTracker[player] or table.clone(DefaultComboTable)
+local function getDefaultMoveData()
+	return {
+		Combo = 0,
+		CurrentCombo = 1,
+		Time = os.clock(),
+		ResetToken = 0
+	}
+end
 
-	local moveData = GameConfig.Moves[move]:: GameConfig.Move
+local function getMoveData(character)
+	if not ComboTracker[character] then
+		ComboTracker[character] = getDefaultMoveData()
+	end
+	return ComboTracker[character]
+end
+function ComboTracker:Advance(character: Model, move: string)
+	local data = getMoveData(character)
+
+	local moveData = GameConfig.Moves[move]
 	local max = #moveData.Damage
 
 	local nextCombo = data.Combo % max + 1
@@ -22,43 +37,66 @@ function ComboTracker:Advance(player: Player, move: string)
 	data.CurrentCombo = nextCombo
 	data.Combo += 1
 	data.Time = os.clock()
-	
-	ComboTracker[player] = data
+	data.ResetToken += 1
+
+	if self.ComboChanged then
+		self.ComboChanged:Fire(character, move, nextCombo)
+	end
+
 	return nextCombo
 end
 
-function ComboTracker:Reset(player: Player)
-	local data = ComboTracker[player] or table.clone(DefaultComboTable)
-	data.Time = os.clock()
+function ComboTracker:Reset(character: Model)
+	local data = getMoveData(character)
+
 	data.Combo = 0
 	data.CurrentCombo = 1
-	
-	ComboTracker[player] = data
+	data.Time = os.clock()
+
+	if self.ComboEnded then
+		self.ComboEnded:Fire(character)
+	end
 end
 
-function ComboTracker.getStep(player, move)
-	return (ComboTracker[player] or DefaultComboTable).CurrentCombo
+function ComboTracker.getStep(character, move)
+	if ComboTracker[character] then
+		return ComboTracker[character].CurrentCombo
+	end
+	return 1
 end
 
-function ComboTracker.getLastHitTime(player)
-	return (ComboTracker[player] or DefaultComboTable).Time
+function ComboTracker.getLastHitTime(character, move)
+	if ComboTracker[character] then
+		return ComboTracker[character].Time
+	end
+	return os.clock()
 end
 
-function ComboTracker:StartResetTimer(player, move)
-	local moveData = GameConfig.Moves[move]:: GameConfig.Move
-	local resetTime = moveData.ComboResetTime
-	
-	local hitTime = ComboTracker[player].Time
-	
-	task.delay(resetTime, function()
-		if ComboTracker[player] and ComboTracker[player].Time == hitTime then
-			ComboTracker:Reset(player)
+function ComboTracker:StartResetTimer(character: Model)
+	local data = getMoveData(character)
+	local token = data.ResetToken
+
+	task.delay(1.2, function()
+		local current = getMoveData(character)
+
+		if current.ResetToken == token then
+			self:Reset(character)
 		end
 	end)
 end
 
-PlayerSignals.PlayerRemoving:Connect(function(player)
-	ComboTracker[player] = nil
-end)
+ComboTracker.onReady = function()
+	if game.RunService:IsServer() then
+		PlayerSignals.PlayerAdded:Connect(function(player)
+			player.CharacterAdded:Connect(function(character)
+				ComboTracker[character] = nil
+			end)
+		end)
+	else
+		game.Players.LocalPlayer.CharacterAdded:Connect(function()
+			ComboTracker[game.Players.LocalPlayer.Character] = nil
+		end)
+	end
+end
 
 return ComboTracker
