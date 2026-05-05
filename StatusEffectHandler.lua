@@ -1,3 +1,5 @@
+local Players = game.Players
+
 local ReplicatedStorage = game.ReplicatedStorage
 local Modules = ReplicatedStorage.Modules
 local Shared = Modules.Shared
@@ -263,8 +265,14 @@ function StatusEffectHandler.apply(effectName: string, character: Model, StateMa
 	local baseDefinition = StatusEffectHandler.Definitions[effectName]
 	assert(baseDefinition, "[StatusEffectHandler] Effect '" .. effectName .. "' not found in Definitions.")
 	
-	local baseConfig = GameConfig.StatusEffects[effectName]
-	assert(baseConfig, "[StatusEffectHandler] Effect '" .. effectName .. "' not found in GameConfig.")
+	local baseConfig = nil
+
+	if not baseDefinition.subEffects or baseDefinition.onApply or baseDefinition.onTick then
+		baseConfig = GameConfig.StatusEffects[effectName]
+		assert(baseConfig, "[StatusEffectHandler] Effect '" .. effectName .. "' not found in GameConfig.")
+	end
+
+	local effect = baseConfig and table.clone(baseConfig) or {}
 	
 	local effect = table.clone(baseConfig)
 	if overrides then
@@ -350,7 +358,7 @@ function StatusEffectHandler.isActive(effectName: string, character: Model): boo
 	return false
 end
 
-PlayerSignals.PlayerAdded:Connect(function(player: Player)
+Players.PlayerAdded:Connect(function(player: Player)
 	player.CharacterRemoving:Connect(function(character)
 		if characterStateConnections[character] then
 			characterStateConnections[character] = nil
