@@ -29,14 +29,13 @@
 
 	EFFECT LIST:
 
-	Stun        = {Duration = 5 },
-	Slow        = {Duration = 5, Value = 0.5},
-	SpeedBoost  = {Duration = 5, Value = 0.5},
-	Burn        = {Duration = 5, TickRate = 0.5, DamagePerTick = 2},
-	Poison      = {Duration = 5, TickRate = 1, DamagePerTick = 3},
-	Shield      = {Duration = 5, Value = 50 },
-	Invulnerable= {Duration = 5 },
-	GuardBreak = {},
+	Stun = {Duration = 5},
+	Slow = {Duration = 5, Value = 0.5},
+	SpeedBoost = {Duration = 5, Value = 0.5},
+	Burn = {Duration = 5, TickRate = 0.5, DamagePerTick = 2},
+	Poison = {Duration = 5, TickRate = 1, DamagePerTick = 3},
+	Shield = {Duration = 5, Value = 50 },
+	Invulnerable = {Duration = 5 },
 
 	-- IMPORTANT!!!!!
 	-- effect name is case sensitive. you may NOT do "stun" but must do "Stun" instead.
