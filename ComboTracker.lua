@@ -436,7 +436,7 @@ end
 --[[
 	StatusEffectHandler.removeAll
 	
-	Strips every active effect from a character — used on death or respawn.
+	Strips every active effect from a character, this is used on death or respawn.
 	Iterates all slots, cancels each, calls onRemove, then wipes the Registry entry
 	entirely so there's no leftover state.
 --]]
