@@ -220,7 +220,7 @@ StatusEffectHandler.Definitions = {
 				hum.Health -= effect.DamagePerTick or 3
 			end
 		end,
-		-- mo onApply/onRemove needed bc poison only does damage, no persistent state changes
+		-- no onApply/onRemove needed bc poison only does damage, no persistent state changes
 	},
 
 	Shield = {
