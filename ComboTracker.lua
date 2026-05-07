@@ -12,6 +12,36 @@
 	(a lil coding knowledge needed cuz u need to add an onRemove and onApply)
 --]]
 
+--[[
+
+	HOW TO GIVE YOURSELF AN EFFECT (ADMIN COMMANDS) TO TEST IT OUT WHEN YOU JOIN THE GAME
+
+	-- put username, not "me" or "others" or "all"
+
+	-- /effect <name> <effectname> to give effects
+	-- example: /effect john Burn
+
+	-- /remove <name> <effectname> -- to remove an effect
+	-- example: /remove john Burn
+
+	-- /removeall <name>
+	-- example: /removeall john
+
+	EFFECT LIST:
+
+	Stun        = {Duration = 5 },
+	Slow        = {Duration = 5, Value = 0.5},
+	SpeedBoost  = {Duration = 5, Value = 0.5},
+	Burn        = {Duration = 5, TickRate = 0.5, DamagePerTick = 2},
+	Poison      = {Duration = 5, TickRate = 1, DamagePerTick = 3},
+	Shield      = {Duration = 5, Value = 50 },
+	Invulnerable= {Duration = 5 },
+	GuardBreak = {},
+
+	-- IMPORTANT!!!!!
+	-- effect name is case sensitive. you may NOT do "stun" but must do "Stun" instead.
+]]
+
 local Players = game:GetService("Players")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
