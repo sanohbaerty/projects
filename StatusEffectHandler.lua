@@ -148,7 +148,7 @@ StatusEffectHandler.Definitions = {
 		onTick = function(character, effect, StateMachine)
 			local hum = character:FindFirstChildOfClass("Humanoid")
 			if hum and hum.Health > 0 then
-				hum:TakeDamage(effect.DamagePerTick or 2)
+				hum.Health -= effect.DamagePerTick or 2
 			end
 		end,
 
@@ -164,7 +164,7 @@ StatusEffectHandler.Definitions = {
 		onTick = function(character, effect, StateMachine)
 			local hum = character:FindFirstChildOfClass("Humanoid")
 			if hum and hum.Health > 0 then
-				hum:TakeDamage(effect.DamagePerTick or 3)
+				hum.Health -= effect.DamagePerTick or 3
 			end
 		end,
 	},
@@ -271,8 +271,6 @@ function StatusEffectHandler.apply(effectName: string, character: Model, StateMa
 		baseConfig = GameConfig.StatusEffects[effectName]
 		assert(baseConfig, "[StatusEffectHandler] Effect '" .. effectName .. "' not found in GameConfig.")
 	end
-
-	local effect = baseConfig and table.clone(baseConfig) or {}
 	
 	local effect = table.clone(baseConfig)
 	if overrides then
@@ -360,9 +358,9 @@ end
 
 Players.PlayerAdded:Connect(function(player: Player)
 	player.CharacterRemoving:Connect(function(character)
-		if characterStateConnections[character] then
-			characterStateConnections[character] = nil
-		end
+		if not characterStateConnections[character] then return end
+		
+		characterStateConnections[character] = nil
 	end)
 end)
 
