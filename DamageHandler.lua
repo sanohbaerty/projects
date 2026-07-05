@@ -1,4 +1,6 @@
 -- Connected Discord-GitHub
+-- made by .sanoh on discord
+-- made by s4n0h on roblox
 
 -- this module is for handling damage on the server
 -- it checks blocking, shield, stun, launch, vfx, hit reactions, all that
