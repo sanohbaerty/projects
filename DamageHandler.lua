@@ -1,3 +1,5 @@
+-- Connected Discord-GitHub
+
 -- this module is for handling damage on the server
 -- it checks blocking, shield, stun, launch, vfx, hit reactions, all that
 
