@@ -1,17 +1,17 @@
--- Connected Discord-GitHub
--- made by .sanoh on discord
--- made by s4n0h on roblox
+-- Connected Discord-GitHub | Discord: .sanoh | Roblox: S4N0H
 
--- this module is for handling damage on the server
--- it checks blocking, shield, stun, launch, vfx, hit reactions, all that
+-- damageHandler is the server side part that decides what a confirmed hit actually does.
+-- the hitbox and validator should already decide if the hit is real before this runs.
+-- this module only handles the result of that hit, like damage, block logic, shield hp, stun, launch, airborne holding, and vfx signals.
+-- i keep it server sided because clients should not be trusted to decide health, guard break, or physics that affects another player.
 
 local damageHandler = {}
 
--- getting the services we need
+-- services used by the damage resolver
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
--- getting shared modules
+-- shared modules used by both server and client systems
 local Modules = ReplicatedStorage.Modules
 local Shared = Modules.Shared
 local GameConfig = require(Shared.GameConfig)
@@ -19,22 +19,24 @@ local StateRegistry = require(Shared.StateRegistry)
 local CombatSignals = require(Shared.CombatSignals)
 local AnimationController = require(Shared.AnimationController)
 
--- getting server modules
-local ServerScriptService = game.ServerScriptService
-local Server = ServerScriptService.Server
-local StatusEffectHandler = require(Server.StatusEffectHandler)
+-- no server-only module is required here right now.
+-- damageHandler should stay focused on resolving a confirmed hit, not doing extra setup.
 
--- remotes for telling the client to play stuff
+-- remotes only tell clients to show animations and vfx. damage itself stays on the server
 local Remotes = ReplicatedStorage.Remotes
 
--- attribute names so i dont keep typing strings everywhere
+-- attribute keys are stored once so spelling mistakes do not silently break shields
 local ATTR_SHIELDABSORB = "ShieldAbsorb"
 local ATTR_SHIELDBAR = "ShieldBar"
 
--- an entity is basically just a character and its humanoid
+-- the damage system passes characters around as entities so every helper gets the same shape of data
 type entity = {character: Model, humanoid: Humanoid}
 
 
+-- shield absorb is handled before normal block logic.
+-- reason is simple: absorb acts like a temporary extra health layer from a status effect,
+-- while block is an active state from the StateMachine. keeping them separate makes it easier
+-- to add new defensive effects later without rewriting the main Damage function.
 local function applyAbsorb(entity: entity, damage: number)
 	-- gets the person being hit
 	local victim = entity.character
@@ -44,7 +46,7 @@ local function applyAbsorb(entity: entity, damage: number)
 	local victimHumanoid = entity.humanoid
 	if not victimHumanoid then return end
 	
-	-- checks if they have shield absorb
+	-- absorb is stored on the character so any status effect can add it without changing this module
 	local absorb = victim:GetAttribute(ATTR_SHIELDABSORB)
 	if not absorb then return end
 	
@@ -55,18 +57,22 @@ local function applyAbsorb(entity: entity, damage: number)
 		-- shield absorb ran out so remove it
 		victim:SetAttribute("ShieldAbsorb", nil)
 
-		-- returns the leftover damage
+		-- shield absorb broke, so only the leftover amount should hit health
 		return math.abs(remaining)
 	else
 		-- shield absorbed all the damage
 		victim:SetAttribute("ShieldAbsorb", remaining)
 
-		-- no damage goes through
+		-- absorb still has points left, so the actual health damage becomes 0
 		return 0
 	end
 end
 
 
+-- guard break is more than just a state change.
+-- when a shield runs out, the StateMachine handles the actual GuardBroken state,
+-- but this helper handles the side effects that have to happen around it:
+-- movement refresh, no jumping, client feedback for players, and server animation for npcs.
 local function playGuardBreak(entity: entity, duration: number)
 	-- this plays when someones block breaks
 
@@ -76,30 +82,30 @@ local function playGuardBreak(entity: entity, duration: number)
 	local victimHumanoid = entity.humanoid
 	if not victimHumanoid then return end
 	
-	-- update their movement so the guardbroken state can slow them or stop them
+	-- refresh movement because GuardBroken may change walk speed or stop movement completely
 	StateRegistry:UpdateMovement(victim)
 
-	-- stops them from jumping while guard broken
+	-- stop jump so a guard broken player cannot hop out of the punish window
 	victimHumanoid.JumpPower = 0
 	
-	-- checks if this victim is a real player
+	-- players and npcs need different feedback paths
 	local victimPlayer = game.Players:GetPlayerFromCharacter(victim)
 
 	if victimPlayer then
-		-- if its a player then tell their client their block broke
+		-- player animations and ui should be handled on their own client
 		Remotes.BlockBroken:FireClient(victimPlayer, duration)
 	else
-		-- if its an npc then play the animation on the server
+		-- npcs do not have a player client, so the server plays their animation
 		AnimationController:StopAll(nil, victim)
 		AnimationController:Play("BlockBroken", nil, nil, victim)
 	end
 	
 	task.delay(duration, function()
-		-- after the duration is done, give movement and jump back
+		-- after guard break ends, restore movement using the current state rules
 		StateRegistry:UpdateMovement(victim)
 		victimHumanoid.JumpPower = victim:GetAttribute("DefaultJumpPower") or 50
 		
-		-- player handles their own animation
+		-- players already got told through the remote, so do not stop a server track that does not exist
 		if victimPlayer then return end
 
 		-- stop npc block broken animation
@@ -108,8 +114,12 @@ local function playGuardBreak(entity: entity, duration: number)
 end
 
 
+-- hit reactions are split between players and npcs.
+-- players get a remote because their client owns their animation controller,
+-- but npcs can safely play the animation from the server.
+-- this keeps player combat responsive without letting the client control real damage.
 local function playHitReaction(entity: entity, move: string)
-	-- this makes the victim play a hit reaction
+	-- this makes the victim show a hit reaction without letting the client decide damage
 
 	local victim = entity.character
 	if not victim then return end
@@ -120,25 +130,29 @@ local function playHitReaction(entity: entity, move: string)
 	local victimPlayer = game.Players:GetPlayerFromCharacter(victim)
 
 	if victimPlayer then
-		-- players get told through a remote
+		-- players get the animation request locally so it feels smoother
 		Remotes.HitReaction:FireClient(victimPlayer, move)
 	else
-		-- npcs play animation from the server
+		-- npcs run from the server side animation controller
 		local customName = move .. "Hit"
 
-		-- tries to use a custom hit animation for that move
+		-- custom hit reactions let certain moves feel different without changing the damage code
 		if AnimationController:HasTrack(customName .. "1", victim) then
 			AnimationController:Play(customName, nil, nil, victim)
 		else
-			-- if theres no custom one then use the normal hit reaction
+			-- fallback so a missing custom animation does not break the combat flow
 			AnimationController:Play("HitReaction", nil, nil, victim)
 		end
 	end
 end
 
 
+-- shield block uses a shield bar instead of reducing health right away.
+-- if the bar still has hp, the hit is fully blocked.
+-- if the bar breaks, the victim is forced into GuardBroken and the damage goes through.
+-- this is why this helper returns a number instead of directly deciding everything in Damage.
 local function applyShieldBlock(entity: entity, victimState, damage: number)
-	-- this is for shield type blocking
+	-- shield type blocking drains the shield bar before touching health
 
 	local victim = entity.character
 	if not victim then return end
@@ -146,67 +160,75 @@ local function applyShieldBlock(entity: entity, victimState, damage: number)
 	local victimHumanoid = entity.humanoid
 	if not victimHumanoid then return end
 
-	-- gets current shield bar
+	-- use the saved shield value, or reset to config value if the attribute is not there yet
 	local shield = victim:GetAttribute(ATTR_SHIELDBAR) or GameConfig.ShieldBar
 
-	-- subtracts the hit damage from shield
+	-- shield loses the same amount that the hit would have dealt
 	local newShield = shield - damage
 
 	if newShield <= 0 then
-		-- shield broke
+		-- shield hit zero, so the victim gets punished with GuardBroken
 		victim:SetAttribute(ATTR_SHIELDBAR, 0)
 
-		-- puts victim into guard broken state
+		-- StateMachine owns the real combat state, not this helper
 		victimState:Transition("GuardBroken", {
 			onEnter = {Duration = GameConfig.GuardBrokenDuration}
 		})
 		
-		-- plays guard break stuff
+		-- visual and movement side effects are handled outside the state transition
 		playGuardBreak(entity, GameConfig.GuardBrokenDuration)
 		
-		-- shows guard break vfx to everyone
+		-- everyone sees the break because it matters for combat readability
 		Remotes.VFX:FireAllClients(entity, "GuardBreak", nil, nil, true)
 		
-		-- damage goes through because shield broke
+		-- this version lets the hit damage through when the shield breaks
 		return damage
 	else
-		-- shield still has health left
+		-- shield survived, so save the new shield hp
 		victim:SetAttribute(ATTR_SHIELDBAR, newShield)
 
-		-- no health damage
+		-- block fully ate the hit
 		return 0
 	end
 end
 
 
+-- this is the one place that decides how blocking changes damage.
+-- the main Damage function should not care if the game is using Shield block or Partial block.
+-- GameConfig decides the block type, then this function returns the final damage that should hit health.
 local function resolveBlockedDamage(entity: entity, victimState, damage: number): number
-	-- decides what happens when someone blocks
+	-- returns the health damage after block rules are applied
 
 	local victim = entity.character
 	if not victim then return end
 	
 	if GameConfig.BlockType == "Shield" then
-		-- shield blocking uses shield hp
+		-- Shield mode uses the shield bar system
 		return applyShieldBlock(entity, victimState, damage)
 
 	elseif GameConfig.BlockType == "Partial" then
-		-- partial block only lets some damage through
+		-- Partial mode reduces damage by a percent instead of using shield hp
 		return damage * (GameConfig.PartialBlockPercent / 100)
 	end
 	
-	-- if no special block type then just use the damage
+	-- fallback keeps the function safe if config is changed wrong
 	return damage
 end
 
 
+-- tiny helper for smoothing numbers.
+-- i use this during launch so velocity changes do not snap instantly from one value to another.
 local function lerpNumber(a, b, t)
 	-- smooths a number between a and b
 	return a + (b - a) * t
 end
 
 
+-- launch only runs for moves that have Launch data in GameConfig.
+-- this lets a normal punch, heavy hit, uppercut, or air combo all use the same damage code
+-- while the config decides which moves actually push players into the air.
 local function applyLaunch(victimEntity: entity, attackerEntity: entity, moveData: GameConfig.Move)
-	-- handles moves that launch someone in the air
+	-- reads moveData.Launch and applies physics to the victim and maybe the attacker
 
 	local launch = moveData.Launch
 	if not launch then return false end
@@ -217,7 +239,7 @@ local function applyLaunch(victimEntity: entity, attackerEntity: entity, moveDat
 	local didLaunch = false
 	
 	if launch.Target and victimRoot then
-		-- launches the victim
+		-- victim launch is the knockup or knockback part of the move
 
 		local currentVelocity = victimRoot.AssemblyLinearVelocity
 		local launchVelocity = launch.Target
@@ -231,7 +253,7 @@ local function applyLaunch(victimEntity: entity, attackerEntity: entity, moveDat
 		task.delay(0.08, function()
 			if not victimRoot or not victimRoot.Parent then return end
 
-			-- gives a little extra upwards push after a tiny delay
+			-- second push helps the launch feel consistent after Roblox physics updates
 			local current = victimRoot.AssemblyLinearVelocity
 			victimRoot.AssemblyLinearVelocity = Vector3.new(
 				current.X,
@@ -244,7 +266,7 @@ local function applyLaunch(victimEntity: entity, attackerEntity: entity, moveDat
 	end
 	
 	if launch.Self and attackerRoot then
-		-- launches the attacker too if the move has self launch
+		-- self launch is used for air combo starters where the attacker follows the victim
 
 		attackerRoot:SetNetworkOwner(nil)
 
@@ -260,7 +282,7 @@ local function applyLaunch(victimEntity: entity, attackerEntity: entity, moveDat
 		task.delay(0.08, function()
 			if not attackerRoot or not attackerRoot.Parent then return end
 
-			-- same second boost thing but for attacker
+			-- same delayed boost so attacker launch matches victim launch timing
 			local current = attackerRoot.AssemblyLinearVelocity
 			attackerRoot.AssemblyLinearVelocity = Vector3.new(
 				current.X,
@@ -280,8 +302,11 @@ type AirborneOptions = {
 }
 
 
+-- front align speed changes based on how long the air combo lasts.
+-- short air time needs the attacker to move into place faster,
+-- longer air time can move slower so it looks less jerky.
 local function getAirborneFrontAlignSpeed(duration: number)
-	-- decides how fast the attacker should move into place during air combos
+	-- turns air duration into a lerp speed for front align
 
 	local frontCfg = GameConfig.AirborneFrontAlign
 
@@ -300,8 +325,11 @@ local function getAirborneFrontAlignSpeed(duration: number)
 end
 
 
+-- this builds the CFrame where the attacker should float during an air combo.
+-- it uses the victim root look vector so the attacker stays in front of the victim,
+-- not just at some random world position.
 local function getFrontAlignCFrame(victimRoot: BasePart)
-	-- gets the position in front of the victim
+	-- builds a position in front of the victim and makes the attacker face back toward them
 
 	local frontCfg = GameConfig.AirborneFrontAlign
 
@@ -315,36 +343,40 @@ local function getFrontAlignCFrame(victimRoot: BasePart)
 end
 
 
+-- keeps a character suspended after a launch.
+-- this is the part that stops air combos from instantly falling apart because of Roblox gravity.
+-- LinearVelocity does the holding, attributes store the timer, and optional front align keeps
+-- the attacker positioned in front of the victim for follow up hits.
 local function keepAirborne(character: Model, duration: number, airborneOptions: AirborneOptions?)
-	-- keeps a character in the air for a bit
+	-- sets up the temporary airborne state and gravity counter force
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local root = character:FindFirstChild("HumanoidRootPart")
 
 	if not humanoid or not root then return end
 
-	-- stops roblox freefall from taking over
+	-- Freefall is disabled so Roblox does not force a falling animation during the combo hold
 	humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
 
-	-- if theyre already airborne just extend the time
+	-- if another hit lands mid air, extend the timer instead of making duplicate force objects
 	if character:GetAttribute("Airborne") then
 		character:SetAttribute("AirborneUntil", os.clock() + duration)
 		return
 	end
 
-	-- marks them as airborne
+	-- attributes let other systems know this character is currently being held in an air combo
 	character:SetAttribute("AirborneUntil", os.clock() + duration)
 	character:SetAttribute("Airborne", true)
 
-	-- server controls the root while airborne
+	-- server ownership makes the air hold more consistent across players
 	root:SetNetworkOwner(nil)
 
-	-- attachment for linear velocity
+	-- LinearVelocity needs an attachment to know what part it is acting on
 	local att = Instance.new("Attachment")
 	att.Name = "AirborneAttachment"
 	att.Parent = root
 
-	-- linear velocity holds them in the air
+	-- starts at zero force, then ramps up later so the launch does not instantly cancel
 	local lv = Instance.new("LinearVelocity")
 	lv.Name = "AirborneHold"
 	lv.Attachment0 = att
@@ -355,7 +387,7 @@ local function keepAirborne(character: Model, duration: number, airborneOptions:
 
 	local frontAlignConn
 
-	-- this keeps attacker in front of victim during air combos
+	-- optional front align is only used for the attacker, not every airborne character
 	if GameConfig.AirborneFrontAlign and GameConfig.AirborneFrontAlign.Enabled and airborneOptions and airborneOptions.FrontAlign and airborneOptions.FollowCharacter then
 		local alignSpeed = getAirborneFrontAlignSpeed(duration)
 
@@ -382,14 +414,14 @@ local function keepAirborne(character: Model, duration: number, airborneOptions:
 				return
 			end
 
-			-- moves the character to the front align spot
+			-- CFrame lerp moves toward the air combo spot smoothly instead of teleporting
 			local targetCFrame = getFrontAlignCFrame(followRoot)
 			local alpha = math.clamp(alignSpeed * dt, 0, 1)
 			root.CFrame = root.CFrame:Lerp(targetCFrame, alpha)
 		end)
 	end
 
-	-- waits until the launch slows down a little
+	-- let the first part of the launch happen before the hold force starts fighting it
 	local start = os.clock()
 	while os.clock() - start < 0.6 do
 		if not root.Parent then break end
@@ -397,7 +429,7 @@ local function keepAirborne(character: Model, duration: number, airborneOptions:
 		task.wait()
 	end
 
-	-- slowly turns on the force so it doesnt snap weird
+	-- ramp force in so the character does not snap or jitter when the hold starts
 	local holdStart = os.clock()
 	local rampTime = 0.18
 	local maxForce = root.AssemblyMass * workspace.Gravity * 1.8
@@ -409,7 +441,7 @@ local function keepAirborne(character: Model, duration: number, airborneOptions:
 		task.wait()
 	end
 
-	-- either slowly falls or just stays still depending on config
+	-- after the ramp, the config decides if the character floats still or drifts downward
 	if GameConfig.FallDownSlowly then
 		lv.MaxForce = maxForce
 		lv.VectorVelocity = Vector3.new(0, -GameConfig.FallDownRate, 0)
@@ -419,7 +451,7 @@ local function keepAirborne(character: Model, duration: number, airborneOptions:
 	end
 
 	task.spawn(function()
-		-- waits until airborne time is over
+		-- keep checking the attribute because later hits can extend the same airborne state
 		while root.Parent do
 			local airborneUntil = character:GetAttribute("AirborneUntil")
 			if not airborneUntil or os.clock() >= airborneUntil then
@@ -428,7 +460,7 @@ local function keepAirborne(character: Model, duration: number, airborneOptions:
 			task.wait(0.05)
 		end
 
-		-- stops front align
+		-- disconnect the heartbeat loop so it does not keep running after the combo ends
 		if frontAlignConn then
 			frontAlignConn:Disconnect()
 			frontAlignConn = nil
@@ -440,7 +472,7 @@ local function keepAirborne(character: Model, duration: number, airborneOptions:
 			task.wait(exitCfg.ExitDelay)
 		end
 
-		-- freezes then drops if config says that
+		-- FreezeThenDrop gives a small pause before gravity takes back over
 		if exitCfg.Mode == "FreezeThenDrop" then
 			local startFreeze = os.clock()
 
@@ -450,7 +482,7 @@ local function keepAirborne(character: Model, duration: number, airborneOptions:
 				task.wait()
 			end
 
-		-- smoothly drops them if config says that
+		-- SmoothDrop lets the force push downward instead of instantly removing the hold
 		elseif exitCfg.Mode == "SmoothDrop" then
 			local startDrop = os.clock()
 			local dropTime = exitCfg.DropTime
@@ -466,18 +498,18 @@ local function keepAirborne(character: Model, duration: number, airborneOptions:
 			end
 		end
 
-		-- clean up the force objects
+		-- destroy temporary physics objects so old air combo forces do not stack up
 		if lv then lv:Destroy() end
 		if att then att:Destroy() end
 
-		-- gives roblox freefall back
+		-- Freefall gets re-enabled once the custom air hold is finished
 		humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
 
-		-- remove airborne attributes
+		-- clear attributes so other systems do not think the character is still airborne
 		character:SetAttribute("Airborne", nil)
 		character:SetAttribute("AirborneUntil", nil)
 
-		-- gives network ownership back to the player
+		-- return ownership so player movement feels normal after the server controlled combo
 		local player = game.Players:GetPlayerFromCharacter(character)
 		if player and root and root.Parent then
 			root:SetNetworkOwner(player)
@@ -486,20 +518,23 @@ local function keepAirborne(character: Model, duration: number, airborneOptions:
 end
 
 
+-- this wraps launch and airborne holding into one helper.
+-- applyLaunch gives the actual velocity push, then keepAirborne decides how long each character stays up.
+-- doing it here keeps the main Damage function readable.
 local function handleAirborne(victimEntity: entity, attackerEntity: entity, moveData: GameConfig.Move)
-	-- handles all launch and airborne stuff for a move
+	-- one helper handles both the physics push and the timed air hold
 
 	local didLaunch = applyLaunch(victimEntity, attackerEntity, moveData)
 
 	if didLaunch and moveData.TargetAirborneDuration then
-		-- keeps victim in air
+		-- victim stays airborne only if the move config asks for it
 		task.spawn(function()
 			keepAirborne(victimEntity.character, moveData.TargetAirborneDuration)
 		end)
 	end
 
 	if moveData.SelfAirborneDuration then
-		-- keeps attacker in air and makes them stay in front of victim
+		-- attacker gets front align so follow up hits are easier to land
 		task.spawn(function()
 			keepAirborne(attackerEntity.character, moveData.SelfAirborneDuration, {
 				FollowCharacter = victimEntity.character,
@@ -512,66 +547,72 @@ local function handleAirborne(victimEntity: entity, attackerEntity: entity, move
 end
 
 
+-- this is the public method other combat code calls after a hit is confirmed.
+-- it does the final server checks, reads the move config, resolves shields and block,
+-- applies stun, handles launch, subtracts health, fires combat signals, and tells clients to show vfx.
+-- the order matters a lot, because defense has to resolve before health damage and launch.
 function damageHandler.Damage(entity: entity, move: string, combo: number, attackingEntity: entity)
-	-- main damage function
-	-- this runs when a hit actually lands
+	-- main damage function for a confirmed combat hit
+	-- by the time this runs, the hitbox already found a valid target
 
 	local victim = entity.character
 	if not victim then return end
 	
-	local Humanoid = entity.humanoid
-	if not Humanoid then return end
+	local victimHumanoid = entity.humanoid
+	if not victimHumanoid then return end
 	
-	-- attacker has to have humanoid and be alive
+	-- dead attackers should not be able to finish delayed hit callbacks
 	if not attackingEntity.humanoid then return end
 	if attackingEntity.humanoid.Health <= 0 then return end
 
-	-- make sure humanoid actually belongs to the victim
-	if not victim:IsAncestorOf(Humanoid) then return end
+	-- sanity check so a random humanoid cannot be paired with the wrong character model
+	if not victim:IsAncestorOf(victimHumanoid) then return end
 
-	-- get victim state
+	-- StateMachine tells us if the victim is blocking, dead, invincible, or able to be stunned
 	local victimState = StateRegistry:Get(victim) :: StateRegistry.State
 	if not victimState then return end
 
-	-- dont damage dead or invincible people
+	-- invincible and dead states stop the hit before anything else happens
 	if victimState:IsState("Dead") then return end
 	if victimState.Invincible then return end
 
-	-- get move data and damage for this combo hit
+	-- combo index chooses which damage value to use for this hit
 	local moveData = GameConfig.Moves[move] :: GameConfig.Move
 	local damage = moveData.Damage[combo]
 		
-	-- check if shield absorb blocks any damage first
+	-- absorb happens before blocking because it is a separate temporary protection layer
 	local absorbDamage = applyAbsorb(entity, damage)
 	damage = absorbDamage and (absorbDamage == 0 and 0 or absorbDamage) or damage
 	
 	local moveLaunchData = moveData.Launch
 
+	-- blocking gets its own branch because it can change damage, play clash vfx,
+	-- fire block signals, and sometimes still launch depending on move config.
 	if victimState:IsState("Blocking") then
-		-- victim is blocking so handle block damage instead
+		-- blocking changes the damage before health gets touched
 		damage = resolveBlockedDamage(entity, victimState, damage)
 
-		-- tells other scripts damage was blocked
+		-- signal lets ui, sound, or other combat systems react without being directly inside this module
 		CombatSignals.DamageBlocked:Fire(victim, move, damage)
 		
-		-- block clash vfx for victim and attacker
+		-- both sides get clash feedback so the hit does not look like it disappeared
 		local shouldOverride = true
 		local purelyOverride = true
 
 		Remotes.VFX:FireAllClients(entity, "BlockClash", move, combo, shouldOverride)
 		Remotes.VFX:FireAllClients(attackingEntity, "BlockClash", move, combo, shouldOverride, purelyOverride)
 		
-		-- subtract whatever damage got through
-		Humanoid.Health -= damage
+		-- after block rules, only the remaining damage is removed from health
+		victimHumanoid.Health -= damage
 
-		-- tells other scripts damage got dealt
+		-- even blocked hits can deal chip or guard break damage depending on config
 		CombatSignals.DamageDealt:Fire(victim, nil, move, combo, damage)
 		
 		if moveLaunchData and moveLaunchData.OnBlock then
-			-- some moves can still launch even if blocked
-			local didLaunch = handleAirborne(entity, attackingEntity, moveData)
+			-- OnBlock lets special moves still launch during a block, if the config wants that
+			handleAirborne(entity, attackingEntity, moveData)
 			
-			-- stun the victim after block launch
+			-- block launch also stuns so the airborne timer and state timer stay close together
 			victimState:Transition("Stunned", {
 				onEnter = {
 					Overrides = {
@@ -586,7 +627,7 @@ function damageHandler.Damage(entity: entity, move: string, combo: number, attac
 		return damage
 	end
 	
-	-- if they are not blocking then stun them normally
+	-- normal hits stun the victim before damage feedback starts
 	victimState:Transition("Stunned", {
 		onEnter = {
 			Overrides = {
@@ -595,25 +636,25 @@ function damageHandler.Damage(entity: entity, move: string, combo: number, attac
 		}
 	})
 	
-	-- launch and airborne stuff
-	local didLaunch = handleAirborne(entity, attackingEntity, moveData)
+	-- launch happens before vfx so the hit result and movement line up
+	handleAirborne(entity, attackingEntity, moveData)
 	
-	-- actually deal the damage
-	Humanoid.Health -= damage
+	-- subtract health on the server after all defensive checks are done
+	victimHumanoid.Health -= damage
 
-	-- tells other scripts damage happened
+	-- signal keeps the rest of the combat framework loosely connected to this module
 	CombatSignals.DamageDealt:Fire(victim, nil, move, combo, damage)
 	
-	-- decides if it should use normal hit spark or finisher hit spark
+	-- final combo hit gets a different spark so the combo end is readable
 	local effectName = combo == #moveData.Damage and "HitSparkFinisher" or "HitSpark"
 	local VFXData = GameConfig.VFX[effectName] :: GameConfig.VFX
 	
-	-- plays vfx if this effect is meant to happen on hit
+	-- config controls when vfx fires so this module does not hardcode every effect rule
 	if VFXData.Trigger == "OnHit" then
 		Remotes.VFX:FireAllClients(entity, effectName, move, combo)
 	end
 	
-	-- play hit animation
+	-- hit reaction is last because it is only visual feedback after the hit fully resolves
 	playHitReaction(entity, move)
 
 	return damage
