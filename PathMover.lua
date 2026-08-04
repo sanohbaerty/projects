@@ -4,9 +4,7 @@
 -- directmover still owns the actual humanoid moveto call so this file can stay focused on paths instead of mixing every movement job together
 -- defaultagent gives every npc a working base setup while npc definitions and one off requests can override only what they need
 -- the request table also carries callbacks and a token check so an old path cant keep controlling an npc after a newer decision replaces it
-
 -- btw the comments have no indent cuz i didnt write them on github i wrote them somewhere else and that kinda messed up the comments
-
 local ServerScriptService = game:GetService("ServerScriptService")
 local PathfindingService = game:GetService("PathfindingService")
 local RunService = game:GetService("RunService")
